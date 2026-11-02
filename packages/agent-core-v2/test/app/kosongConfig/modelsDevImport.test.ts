@@ -6,6 +6,7 @@ import { DEFAULT_IDENTITY_SLUG, IAgentIdentity } from '#/app/agentIdentity/agent
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import {
+  getModelsDevCatalog,
   resetModelsDevUpstreamForTest,
   setModelsDevUpstreamForTest,
 } from '#/app/kosongConfig/modelsDevUpstream';
@@ -164,6 +165,34 @@ async function expectError2(promise: Promise<unknown>, code: string): Promise<Er
 describe('IModelsDevImportService', () => {
   afterEach(() => {
     resetModelsDevUpstreamForTest();
+  });
+
+  it('returns the cached catalog immediately while the upstream refresh is pending', async () => {
+    let now = 1_000;
+    setModelsDevUpstreamForTest({ fetchImpl: fetchJson(CATALOG), now: () => now });
+    const cached = await getModelsDevCatalog('kimi-test/1.0');
+    now += 11 * 60 * 1000;
+
+    let release!: () => void;
+    let calls = 0;
+    const pending = new Promise<Response>((resolve) => {
+      release = () => resolve(new Response(JSON.stringify(CATALOG), { status: 200 }));
+    });
+    setModelsDevUpstreamForTest({
+      fetchImpl: (() => {
+        calls += 1;
+        return pending;
+      }) as unknown as typeof fetch,
+    });
+
+    expect(await getModelsDevCatalog('kimi-test/1.0')).toBe(cached);
+    expect(await getModelsDevCatalog('kimi-test/1.0')).toBe(cached);
+    expect(calls).toBe(1);
+
+    release();
+    await vi.waitFor(async () => {
+      expect((await getModelsDevCatalog('kimi-test/1.0'))['openai']).toBeDefined();
+    });
   });
 
   it('lists pruned directory entries with import eligibility resolved', async () => {

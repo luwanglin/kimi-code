@@ -61,9 +61,14 @@ export function upstreamFetch(): typeof fetch {
 export async function getModelsDevCatalog(userAgent: string): Promise<ModelsDevCatalog> {
   const now = nowImpl();
   if (cache !== undefined && now - cache.fetchedAt < CACHE_TTL_MS) return cache.catalog;
+  const fallback = cache?.catalog ?? builtInCatalog();
   inFlight ??= fetchAndCache(userAgent).finally(() => {
     inFlight = undefined;
   });
+  if (fallback !== undefined) {
+    void inFlight.catch(() => undefined);
+    return fallback;
+  }
   return inFlight;
 }
 
