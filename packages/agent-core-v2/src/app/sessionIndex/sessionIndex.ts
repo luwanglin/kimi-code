@@ -55,6 +55,7 @@ export interface ISessionIndex {
   get(id: string): Promise<SessionSummary | undefined>;
   listRecent(query: SessionListQuery): Promise<Page<SessionSummary>>;
   count(query: SessionCountQuery): Promise<number>;
+  countByWorkspace(query: SessionCountQuery): Promise<ReadonlyMap<string, number>>;
   remove(id: string): Promise<void>;
 }
 

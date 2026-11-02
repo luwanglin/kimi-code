@@ -11,6 +11,7 @@ export interface IWorkspaceSessions {
 
   listRecent(workspaceId: string): Promise<readonly SessionSummary[]>;
   count(workspaceId: string): Promise<number>;
+  countByWorkspace(): Promise<ReadonlyMap<string, number>>;
 }
 
 export const IWorkspaceSessions: ServiceIdentifier<IWorkspaceSessions> =

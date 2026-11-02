@@ -243,6 +243,20 @@ describe('FileSessionIndex (legacy)', () => {
     expect(await store.count({ workspaceIds: ['wd_unknown'] })).toBe(0);
   });
 
+  it('countByWorkspace aggregates the legacy scan without losing archived sessions', async () => {
+    const otherId = encodeWorkDirKey('/home/user/other');
+    await seedSession('a', {});
+    await seedSession('b', { archived: true }, otherId);
+
+    const store = build();
+    const counts = await store.countByWorkspace({ includeArchived: true });
+    expect(Object.fromEntries(counts)).toEqual({
+      [workspaceId]: 1,
+      [otherId]: 1,
+    });
+    expect((await store.countByWorkspace({ workspaceIds: ['wd_unknown'] })).size).toBe(0);
+  });
+
   it('listRecent applies limit after the cross-bucket merge', async () => {
     const otherId = encodeWorkDirKey('/home/user/other');
     await seedSession('a1', { createdAt: 1, updatedAt: 1 });
@@ -632,6 +646,22 @@ describe('FileSessionIndex (read model)', () => {
     });
     expect(page.items.map((s) => s.id)).toEqual(['prompted']);
     expect(page.nextCursor).toBeUndefined();
+  });
+
+  it('aggregates counts by workspace with archived sessions and mirror updates', async () => {
+    const otherId = encodeWorkDirKey('/home/user/other');
+    await seedSession('active', { createdAt: 1, updatedAt: 1 });
+    await seedSession('archived', { createdAt: 2, updatedAt: 2, archived: true }, otherId);
+    const store = build();
+    await store.prepare();
+    mirror.record(summary('pending', { workspaceId: otherId, createdAt: 3, updatedAt: 3 }));
+
+    const counts = await store.countByWorkspace({ includeArchived: true });
+    expect(Object.fromEntries(counts)).toEqual({
+      [workspaceId]: 1,
+      [otherId]: 2,
+    });
+    expect((await store.countByWorkspace({ workspaceIds: [otherId], includeArchived: true })).get(otherId)).toBe(2);
   });
 
   it('prepare skips stray files and state-less directories instead of failing the projection', async () => {

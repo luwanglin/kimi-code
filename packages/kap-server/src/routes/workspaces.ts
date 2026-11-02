@@ -70,7 +70,6 @@ interface WorkspaceRouteHost {
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 const duplicateDirDetailsSchema = z.array(z.object({ path: z.string(), directory: z.string() }));
-const WORKSPACE_PROJECTION_BATCH_SIZE = 8;
 
 export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): void {
   const listRoute = defineRoute(
@@ -82,17 +81,14 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
       tags: ['workspaces'],
     },
     async (req, reply) => {
-      const items = await core.accessor.get(IWorkspaceService).list();
-      const projected: WorkspaceWire[] = [];
-      for (let start = 0; start < items.length; start += WORKSPACE_PROJECTION_BATCH_SIZE) {
-        projected.push(
-          ...(await Promise.all(
-            items
-              .slice(start, start + WORKSPACE_PROJECTION_BATCH_SIZE)
-              .map((ws) => toWireWorkspace(core, ws)),
-          )),
-        );
-      }
+      const sessions = core.accessor.get(IWorkspaceSessions);
+      const [items, counts] = await Promise.all([
+        core.accessor.get(IWorkspaceService).list(),
+        sessions.countByWorkspace(),
+      ]);
+      const projected = await Promise.all(
+        items.map((ws) => toWireWorkspace(core, ws, counts.get(ws.id) ?? 0)),
+      );
       reply.send(okEnvelope({ items: projected }, req.id));
     },
   );
@@ -487,8 +483,12 @@ async function resolveTrust(
   return core.accessor.get(IWorkspaceTrustStore).forRoot(ws.root);
 }
 
-export async function toWireWorkspace(core: Scope, ws: Workspace): Promise<WorkspaceWire> {
-  const sessionCount = await core.accessor.get(IWorkspaceSessions).count(ws.id);
+export async function toWireWorkspace(
+  core: Scope,
+  ws: Workspace,
+  sessionCount?: number,
+): Promise<WorkspaceWire> {
+  const count = sessionCount ?? (await core.accessor.get(IWorkspaceSessions).count(ws.id));
   return {
     id: ws.id,
     root: ws.root,
@@ -497,7 +497,7 @@ export async function toWireWorkspace(core: Scope, ws: Workspace): Promise<Works
     additional_dirs: [...ws.additionalDirs],
     created_at: new Date(ws.createdAt).toISOString(),
     last_opened_at: new Date(ws.lastOpenedAt).toISOString(),
-    session_count: sessionCount,
+    session_count: count,
   };
 }
 

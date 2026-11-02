@@ -54,6 +54,7 @@ function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
     listRecent: async () => ({ items: summaries, nextCursor: undefined }),
     get: async () => undefined,
     count: async () => summaries.length,
+    countByWorkspace: async () => new Map(),
     remove: async () => {},
   };
 }

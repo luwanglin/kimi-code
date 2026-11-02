@@ -26,6 +26,7 @@ class FakeSessionIndex implements ISessionIndex {
   lastCountQuery: SessionCountQuery | undefined;
   items: readonly SessionSummary[] = [];
   countResult = 0;
+  countsByWorkspace = new Map<string, number>();
 
   async prepare(): Promise<SessionIndexStatus> {
     return this.status();
@@ -47,6 +48,11 @@ class FakeSessionIndex implements ISessionIndex {
   async count(query: SessionCountQuery): Promise<number> {
     this.lastCountQuery = query;
     return this.countResult;
+  }
+
+  async countByWorkspace(query: SessionCountQuery): Promise<ReadonlyMap<string, number>> {
+    this.lastCountQuery = query;
+    return this.countsByWorkspace;
   }
 
   async remove(_id: string): Promise<void> {}
@@ -136,6 +142,26 @@ describe('WorkspaceSessionsService', () => {
       workspaceIds: ['wd_abc', 'wd_abc_legacy'],
       includeArchived: true,
     });
+  });
+
+  it('countByWorkspace folds each alias group once', async () => {
+    const { sessions, index, aliases } = build();
+    aliases.aliases['wd_abc'] = ['wd_abc', 'wd_abc_legacy'];
+    aliases.aliases['wd_abc_legacy'] = ['wd_abc_legacy', 'wd_abc'];
+    index.countsByWorkspace = new Map([
+      ['wd_abc', 2],
+      ['wd_abc_legacy', 3],
+      ['wd_other', 4],
+    ]);
+
+    const result = await sessions.countByWorkspace();
+
+    expect([...result.entries()].toSorted(([a], [b]) => a.localeCompare(b))).toEqual([
+      ['wd_abc', 5],
+      ['wd_abc_legacy', 5],
+      ['wd_other', 4],
+    ]);
+    expect(index.lastCountQuery).toEqual({ includeArchived: true });
   });
 
   it('count returns 0 when the workspace has no sessions', async () => {

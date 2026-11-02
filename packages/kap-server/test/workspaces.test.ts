@@ -743,7 +743,7 @@ describe('server-v2 /api/v1/workspaces', () => {
     }
   });
 
-  it('bounds concurrent session-count projections while listing workspaces', async () => {
+  it('uses one aggregate count query while preserving workspace order', async () => {
     for (let index = 0; index < 10; index++) {
       await postJson<WorkspaceWire>('/api/v1/workspaces', { root: home });
     }
@@ -751,28 +751,18 @@ describe('server-v2 /api/v1/workspaces', () => {
       (item) => item.id,
     );
     const service = (server as RunningServer).core.accessor.get(IWorkspaceSessions);
-    const original = service.count.bind(service);
-    let active = 0;
-    let peak = 0;
-    const counting = vi.spyOn(service, 'count').mockImplementation(async (id) => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      try {
-        return await original(id);
-      } finally {
-        active -= 1;
-      }
-    });
+    const aggregated = vi.spyOn(service, 'countByWorkspace');
+    const perWorkspace = vi.spyOn(service, 'count');
     try {
       const { body } = await getJson<ListWire>('/api/v1/workspaces');
       expect(body.code).toBe(0);
       expect(body.data.items.map((item) => item.id)).toEqual(before);
       expect(body.data.items.length).toBeGreaterThan(8);
-      expect(peak).toBeGreaterThan(1);
-      expect(peak).toBeLessThanOrEqual(8);
+      expect(aggregated).toHaveBeenCalledTimes(1);
+      expect(perWorkspace).not.toHaveBeenCalled();
     } finally {
-      counting.mockRestore();
+      aggregated.mockRestore();
+      perWorkspace.mockRestore();
     }
   });
 });

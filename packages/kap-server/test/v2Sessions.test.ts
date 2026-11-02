@@ -153,6 +153,17 @@ function stubSessionIndex(
           (query.workspaceIds === undefined || query.workspaceIds.includes(summary.workspaceId)) &&
           (query.includeArchived === true || !summary.archived),
       ).length,
+    countByWorkspace: async (query) => {
+      const totals = new Map<string, number>();
+      for (const summary of summaries) {
+        if (query.workspaceIds !== undefined && !query.workspaceIds.includes(summary.workspaceId)) {
+          continue;
+        }
+        if (query.includeArchived !== true && summary.archived) continue;
+        totals.set(summary.workspaceId, (totals.get(summary.workspaceId) ?? 0) + 1);
+      }
+      return totals;
+    },
     remove: async () => {},
   };
 }

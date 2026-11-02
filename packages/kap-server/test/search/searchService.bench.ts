@@ -41,6 +41,7 @@ function makeSessionIndex(list: ISessionIndex['listRecent']): ISessionIndex {
     listRecent: list,
     get: async () => undefined,
     count: async () => 0,
+    countByWorkspace: async () => new Map(),
     remove: async () => {},
   };
 }

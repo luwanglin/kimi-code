@@ -370,6 +370,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     );
   }
 
+  async countByWorkspace(query: SessionCountQuery): Promise<ReadonlyMap<string, number>> {
+    return this.withReadModel(
+      (generation) => this.countByWorkspaceFromReadModel(generation, query),
+      () => this.countByWorkspaceLegacy(query),
+    );
+  }
+
   async remove(id: string): Promise<void> {
     await this.mirror.evict(id);
     await this.withReadModel(
@@ -553,6 +560,42 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       total += weight(summary.archived) - (old === undefined ? 0 : weight(old.archived));
     }
     return total;
+  }
+
+  private async countByWorkspaceFromReadModel(
+    generation: number,
+    query: SessionCountQuery,
+  ): Promise<ReadonlyMap<string, number>> {
+    const counters = sessionCountersCollection(generation);
+    const restricted = query.workspaceIds;
+    const workspaceIds = restricted ?? (await this.queryStore.listKeys(counters));
+    const counts = await this.queryStore.getMany<SessionWorkspaceCounts>(counters, workspaceIds);
+    const totals = new Map<string, number>();
+    for (const workspaceId of workspaceIds) {
+      const entry = counts.get(workspaceId);
+      totals.set(
+        workspaceId,
+        query.includeArchived === true
+          ? (entry?.active ?? 0) + (entry?.archived ?? 0)
+          : (entry?.active ?? 0),
+      );
+    }
+    const pending = this.mirror
+      .pending()
+      .filter((summary) => restricted === undefined || restricted.includes(summary.workspaceId));
+    if (pending.length === 0) return totals;
+    const stored = await this.queryStore.getMany<SessionSummary>(
+      sessionCollection(generation),
+      pending.map((summary) => summary.id),
+    );
+    const weight = (archived: boolean): number =>
+      query.includeArchived === true || !archived ? 1 : 0;
+    for (const summary of pending) {
+      const old = stored.get(summary.id);
+      const delta = weight(summary.archived) - (old === undefined ? 0 : weight(old.archived));
+      totals.set(summary.workspaceId, (totals.get(summary.workspaceId) ?? 0) + delta);
+    }
+    return totals;
   }
 
   private async windowedPage(
@@ -801,6 +844,17 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       if (query.includeArchived === true || !summary.archived) count += 1;
     });
     return count;
+  }
+
+  private async countByWorkspaceLegacy(
+    query: SessionCountQuery,
+  ): Promise<ReadonlyMap<string, number>> {
+    const totals = new Map<string, number>();
+    await this.forEachAuthoritative(query.workspaceIds, (summary) => {
+      if (query.includeArchived !== true && summary.archived) return;
+      totals.set(summary.workspaceId, (totals.get(summary.workspaceId) ?? 0) + 1);
+    });
+    return totals;
   }
 
   private async forEachAuthoritative(

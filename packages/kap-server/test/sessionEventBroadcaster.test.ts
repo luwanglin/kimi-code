@@ -476,7 +476,11 @@ function makeCore(
         };
       }
       if (token === IWorkspaceSessions) {
-        return { listRecent: async () => [], count: async () => 3 };
+        return {
+          listRecent: async () => [],
+          count: async () => 3,
+          countByWorkspace: async () => new Map(),
+        };
       }
       return undefined;
     },

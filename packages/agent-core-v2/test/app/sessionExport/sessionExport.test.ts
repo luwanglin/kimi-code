@@ -882,6 +882,8 @@ function registerSessionExportServices(
     listRecent: async () => ({ items: options.summary === undefined ? [] : [options.summary] }),
     get: async () => options.summary,
     count: async () => (options.summary === undefined || options.summary.archived ? 0 : 1),
+    countByWorkspace: async () =>
+      new Map(options.summary === undefined || options.summary.archived ? [] : [[options.summary.workspaceId, 1]]),
     remove: async () => {},
   });
   reg.defineInstance(ISessionManager, {
