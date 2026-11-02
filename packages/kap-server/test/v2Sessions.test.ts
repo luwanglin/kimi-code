@@ -105,12 +105,16 @@ const SUMMARIES: SessionSummary[] = [
   },
 ];
 
-function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
+function stubSessionIndex(
+  summaries: SessionSummary[],
+  calls?: { listRecent: Parameters<ISessionIndex['listRecent']>[0][] },
+): ISessionIndex {
   return {
     _serviceBrand: undefined,
     prepare: async () => ({ state: 'ready', generation: 1, degradedCount: 0 }),
     status: () => ({ state: 'ready', generation: 1, degradedCount: 0 }),
     listRecent: async (query) => {
+      calls?.listRecent.push(query);
       let items = summaries;
       if (query.workspaceIds !== undefined) {
         const ids = new Set(query.workspaceIds);
@@ -119,10 +123,29 @@ function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
       if (query.includeArchived !== true) {
         items = items.filter((summary) => !summary.archived);
       }
-      return { items, nextCursor: undefined };
+      items = items.toSorted(
+        (a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+      );
+      const cursorId = query.before ?? query.after;
+      if (cursorId !== undefined) {
+        const index = items.findIndex((summary) => summary.id === cursorId);
+        if (index === -1) return { items: [], nextCursor: undefined };
+        items = query.before !== undefined ? items.slice(index + 1) : items.slice(0, index);
+      }
+      if (query.limit === undefined) return { items, nextCursor: undefined };
+      const kept = items.slice(0, query.limit);
+      return {
+        items: kept,
+        nextCursor: items.length > query.limit ? kept.at(-1)?.id : undefined,
+      };
     },
     get: async (id) => summaries.find((summary) => summary.id === id),
-    count: async () => summaries.length,
+    count: async (query) =>
+      summaries.filter(
+        (summary) =>
+          (query.workspaceIds === undefined || query.workspaceIds.includes(summary.workspaceId)) &&
+          (query.includeArchived === true || !summary.archived),
+      ).length,
     remove: async () => {},
   };
 }
@@ -494,6 +517,102 @@ describe('server /api/v2/sessions', () => {
     expect(page1.total).toBe(3);
     const page2 = await getData(`?page_size=2&page_token=${page1.next_page_token}`);
     expect(page2.total).toBe(3);
+  });
+
+  it('bounds default flat reads without changing archived totals or fallback filters', async () => {
+    await (server as RunningServer).close();
+    const calls = { listRecent: [] as Parameters<ISessionIndex['listRecent']>[0][] };
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [
+        [ISessionIndex, stubSessionIndex(SUMMARIES, calls)],
+        [IGitService, gitStub],
+      ],
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    try {
+      const page1 = await getData('?page_size=2');
+      const page2 = await getData(`?page_size=2&page_token=${page1.next_page_token}`);
+      const archived = await getData('?meta.archived=true&page_size=2');
+      const all = await getData('?meta.archived=all&page_size=2');
+      const beyond = await getData('?page=3&page_size=2');
+
+      expect(page1.items.map((item) => item.id)).toEqual(['s1', 's2']);
+      expect(page2.items.map((item) => item.id)).toEqual(['s3']);
+      expect(archived.items.map((item) => item.id)).toEqual(['s4']);
+      expect(archived.total).toBe(1);
+      expect(all.total).toBe(4);
+      expect(beyond.items).toEqual([]);
+      expect(beyond.total).toBe(3);
+      for (const query of calls.listRecent) expect(query.limit).toEqual(expect.any(Number));
+
+      const fallback = await getData('?page_size=2&meta.updated_after=0');
+      expect(fallback.items.map((item) => item.id)).toEqual(page1.items.map((item) => item.id));
+      expect(fallback.total).toBe(page1.total);
+      expect(calls.listRecent.at(-1)?.limit).toBeUndefined();
+    } finally {
+      await server.close();
+      await bootSeeded();
+    }
+  });
+
+  it('keeps index batches bounded across pages and sparse archived results', async () => {
+    await (server as RunningServer).close();
+    const many = Array.from({ length: 205 }, (_, index) => ({
+      id: `bulk_${index}`,
+      workspaceId: WS_A,
+      cwd: '/repo/a',
+      createdAt: index + 1,
+      updatedAt: index + 1,
+      archived: false,
+    }));
+    many.push({
+      id: 'bulk_archived',
+      workspaceId: WS_A,
+      cwd: '/repo/a',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: true,
+    });
+    const calls = { listRecent: [] as Parameters<ISessionIndex['listRecent']>[0][] };
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [
+        [ISessionIndex, stubSessionIndex(many, calls)],
+        [IGitService, gitStub],
+      ],
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    try {
+      const page1 = await getData('?page_size=100');
+      const page2 = await getData(`?page_size=100&page_token=${page1.next_page_token}`);
+      const page3 = await getData(`?page_size=100&page_token=${page2.next_page_token}`);
+      const archived = await getData('?meta.archived=true&page_size=50');
+      const all = await getData('?meta.archived=all&page_size=1');
+
+      expect([page1.items.length, page2.items.length, page3.items.length]).toEqual([100, 100, 5]);
+      expect([page1.total, page2.total, page3.total]).toEqual([205, 205, 205]);
+      expect([page1.has_more, page2.has_more, page3.has_more]).toEqual([true, true, false]);
+      expect(archived.items.map((item) => item.id)).toEqual(['bulk_archived']);
+      expect(archived.total).toBe(1);
+      expect(all.total).toBe(206);
+      expect(calls.listRecent.length).toBeGreaterThanOrEqual(6);
+      for (const query of calls.listRecent) {
+        expect(query.limit).toEqual(expect.any(Number));
+        expect(query.limit).toBeLessThanOrEqual(101);
+      }
+    } finally {
+      await server.close();
+      await bootSeeded();
+    }
   });
 
   it('paginates by 1-based page without minting tokens', async () => {

@@ -70,6 +70,7 @@ interface WorkspaceRouteHost {
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 const duplicateDirDetailsSchema = z.array(z.object({ path: z.string(), directory: z.string() }));
+const WORKSPACE_PROJECTION_BATCH_SIZE = 8;
 
 export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): void {
   const listRoute = defineRoute(
@@ -82,7 +83,16 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
     },
     async (req, reply) => {
       const items = await core.accessor.get(IWorkspaceService).list();
-      const projected = await Promise.all(items.map((ws) => toWireWorkspace(core, ws)));
+      const projected: WorkspaceWire[] = [];
+      for (let start = 0; start < items.length; start += WORKSPACE_PROJECTION_BATCH_SIZE) {
+        projected.push(
+          ...(await Promise.all(
+            items
+              .slice(start, start + WORKSPACE_PROJECTION_BATCH_SIZE)
+              .map((ws) => toWireWorkspace(core, ws)),
+          )),
+        );
+      }
       reply.send(okEnvelope({ items: projected }, req.id));
     },
   );

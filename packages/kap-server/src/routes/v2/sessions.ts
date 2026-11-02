@@ -458,6 +458,48 @@ async function runBatchArchive(
     okEnvelope({ results, succeeded, failed: results.length - succeeded }, requestId),
   );
 }
+
+async function listDefaultFlatPage(
+  index: ISessionIndex,
+  query: NormalizedQuery,
+  workspaceIds: readonly string[] | undefined,
+  start: number,
+  before: string | undefined,
+): Promise<{ items: SessionSummary[]; total: number; hasMore: boolean }> {
+  const activeTotalPromise = index.count({ workspaceIds, includeArchived: false });
+  const allTotalPromise =
+    query.archived === 'false'
+      ? undefined
+      : index.count({ workspaceIds, includeArchived: true });
+
+  const items: SessionSummary[] = [];
+  let scanned = 0;
+  const target = start + query.pageSize + 1;
+  const batchSize = Math.min(Math.max(query.pageSize + 1, 100), 1000);
+  while (scanned < target) {
+    const page = await index.listRecent({
+      workspaceIds,
+      includeArchived: query.archived !== 'false',
+      before,
+      limit: batchSize,
+    });
+    for (const summary of page.items) {
+      if (query.archived === 'true' && !summary.archived) continue;
+      if (scanned >= start && items.length < query.pageSize) items.push(summary);
+      scanned += 1;
+    }
+    if (page.nextCursor === undefined) break;
+    before = page.nextCursor;
+  }
+  const activeTotal = await activeTotalPromise;
+  let total = activeTotal;
+  if (allTotalPromise !== undefined) {
+    const allTotal = await allTotalPromise;
+    total = query.archived === 'all' ? allTotal : Math.max(0, allTotal - activeTotal);
+  }
+  return { items, total, hasMore: scanned > start + items.length };
+}
+
 export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope): void {
   const gitResolver = new GitDomainResolver(core);
 
@@ -517,10 +559,20 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
         workspaceIds = [...new Set(sets.flat())];
       }
 
-      const page = await core.accessor.get(ISessionIndex).listRecent({
-        workspaceIds,
-        includeArchived: query.archived !== 'false',
-      });
+      const index = core.accessor.get(ISessionIndex);
+      const useNativeFlatPage =
+        query.view === 'flat' &&
+        query.statuses === undefined &&
+        query.updatedAfter === undefined &&
+        query.updatedBefore === undefined &&
+        query.hasPrompt === undefined &&
+        query.sort === 'meta.updated_at_desc';
+      const page = useNativeFlatPage
+        ? { items: [] }
+        : await index.listRecent({
+            workspaceIds,
+            includeArchived: query.archived !== 'false',
+          });
 
       const factsById = new Map<string, SessionFacts>();
       const factsOf = (id: string): SessionFacts => {
@@ -610,6 +662,50 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
 
       const projectIds = (summaries: readonly SessionSummary[]): V2SessionIdProjection[] =>
         summaries.map((summary) => ({ id: summary.id, archived: summary.archived }));
+
+      if (useNativeFlatPage) {
+        const start = raw.page === undefined ? 0 : (raw.page - 1) * query.pageSize;
+        const nativePage = await listDefaultFlatPage(
+          index,
+          query,
+          workspaceIds,
+          start,
+          cursor?.[1],
+        );
+        const window = nativePage.items;
+        const lastServed = window.at(-1);
+        const nextPageToken =
+          raw.page === undefined && nativePage.hasMore && lastServed !== undefined
+            ? encodePageToken(fingerprint, keyOf(lastServed), lastServed.id)
+            : null;
+        if (query.projection) {
+          reply.send(
+            okEnvelope(
+              {
+                items: projectIds(window),
+                total: nativePage.total,
+                has_more: nativePage.hasMore,
+                next_page_token: nextPageToken,
+              },
+              req.id,
+            ),
+          );
+          return;
+        }
+        const items = await buildItems(window, await loadCwdOf());
+        reply.send(
+          okEnvelope(
+            {
+              items,
+              total: nativePage.total,
+              has_more: nativePage.hasMore,
+              next_page_token: nextPageToken,
+            },
+            req.id,
+          ),
+        );
+        return;
+      }
 
       if (query.view === 'by_workspace') {
         interface SessionGroup {

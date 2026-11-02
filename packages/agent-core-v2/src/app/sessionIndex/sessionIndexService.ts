@@ -21,6 +21,7 @@ import {
   type ColumnBounds,
   type Page,
   type QueryFilter,
+  type WriteOp,
 } from '#/persistence/interface/queryStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
@@ -363,7 +364,28 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     await this.mirror.evict(id);
     await this.withReadModel(
       async (generation) => {
-        await this.queryStore.delete(sessionCollection(generation), id);
+        const cached = await this.queryStore.get<SessionSummary>(sessionCollection(generation), id);
+        const existing = isSessionSummaryShape(cached)
+          ? stripRecencyField(generation, cached)
+          : undefined;
+        const ops: WriteOp[] = [
+          { kind: 'delete', collection: sessionCollection(generation), key: id },
+        ];
+        if (existing !== undefined) {
+          const counters = sessionCountersCollection(generation);
+          const current = await this.queryStore.get<SessionWorkspaceCounts>(
+            counters,
+            existing.workspaceId,
+          );
+          if (current !== undefined) {
+            const value = {
+              active: Math.max(0, current.active - (existing.archived ? 0 : 1)),
+              archived: Math.max(0, current.archived - (existing.archived ? 1 : 0)),
+            };
+            ops.push({ kind: 'put', collection: counters, key: existing.workspaceId, value });
+          }
+        }
+        await this.queryStore.batch(ops);
       },
       () => Promise.resolve(),
     );
@@ -641,6 +663,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           : [];
       return { items: query.limit !== undefined ? items.slice(0, query.limit) : items };
     }
+    if (query.limit !== undefined) return this.listLegacyLimited(query, query.limit);
 
     const collected = (await this.collectAuthoritative(query.workspaceIds)).filter(
       (summary) =>
@@ -658,12 +681,50 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       if (query.before !== undefined) start = index + 1;
       else end = index;
     }
-    const window = items.slice(start, end);
-    if (query.limit === undefined) return { items: window };
-    const kept = window.slice(0, query.limit);
+    return { items: items.slice(start, end) };
+  }
+
+  private async listLegacyLimited(
+    query: SessionListQuery,
+    limit: number,
+  ): Promise<Page<SessionSummary>> {
+    if (limit === 0) return { items: [] };
+    const cursorId = query.before ?? query.after;
+    const matches = (summary: SessionSummary): boolean =>
+      (query.workspaceIds === undefined || query.workspaceIds.includes(summary.workspaceId)) &&
+      (query.includeArchived === true || !summary.archived) &&
+      summaryMatchesChildOf(summary, query.childOf);
+    const cursor =
+      cursorId === undefined
+        ? undefined
+        : (this.mirror.pending().find((summary) => summary.id === cursorId) ??
+          (await this.getLegacy(cursorId)));
+    if (cursorId !== undefined && (cursor === undefined || !matches(cursor))) return { items: [] };
+
+    const items: SessionSummary[] = [];
+    let eligible = 0;
+    await this.forEachAuthoritative(query.workspaceIds, (summary) => {
+      if (!matches(summary)) return;
+      if (cursor !== undefined) {
+        const order = canonicalOrder(summary, cursor);
+        if (query.before !== undefined && order <= 0) return;
+        if (query.after !== undefined && order >= 0) return;
+      }
+      eligible += 1;
+      if (items.length === limit && canonicalOrder(summary, items.at(-1)!) >= 0) return;
+      let low = 0;
+      let high = items.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        if (canonicalOrder(summary, items[middle]!) < 0) high = middle;
+        else low = middle + 1;
+      }
+      items.splice(low, 0, summary);
+      if (items.length > limit) items.pop();
+    });
     return {
-      items: kept,
-      nextCursor: window.length > query.limit ? kept.at(-1)!.id : undefined,
+      items,
+      nextCursor: eligible > limit ? items.at(-1)?.id : undefined,
     };
   }
 
@@ -724,10 +785,30 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   private async countLegacy(query: SessionCountQuery): Promise<number> {
     let count = 0;
-    for (const summary of await this.collectAuthoritative(query.workspaceIds)) {
+    await this.forEachAuthoritative(query.workspaceIds, (summary) => {
       if (query.includeArchived === true || !summary.archived) count += 1;
-    }
+    });
     return count;
+  }
+
+  private async forEachAuthoritative(
+    workspaceIds: readonly string[] | undefined,
+    visit: (summary: SessionSummary) => void,
+  ): Promise<void> {
+    const pending = this.mirror.pending();
+    const pendingById = new Map(pending.map((summary) => [summary.id, summary]));
+    const ids = workspaceIds ?? (await listWorkspaceIds(this.storage, this.sessionsScope));
+    for (const workspaceId of ids) {
+      for (const sessionId of await listSessionIds(this.storage, this.sessionsScope, workspaceId)) {
+        if (pendingById.has(sessionId)) continue;
+        const summary = await readSessionSummary(this.docs, this.sessionsScope, workspaceId, sessionId);
+        if (summary !== undefined) visit(summary);
+      }
+    }
+    for (const summary of pending) {
+      if (workspaceIds !== undefined && !workspaceIds.includes(summary.workspaceId)) continue;
+      visit(summary);
+    }
   }
 
   private async collectAuthoritative(

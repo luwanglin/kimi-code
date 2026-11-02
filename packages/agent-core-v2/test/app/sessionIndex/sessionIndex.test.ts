@@ -287,6 +287,10 @@ describe('FileSessionIndex (legacy)', () => {
 
     const newer = await store.listRecent({ workspaceIds: [workspaceId], after: 's2' });
     expect(newer.items.map((s) => s.id)).toEqual(['s4', 's3']);
+    const newerLimited = await store.listRecent({ workspaceIds: [workspaceId], after: 's2', limit: 1 });
+    expect(newerLimited.items.map((s) => s.id)).toEqual(['s4']);
+    expect(newerLimited.nextCursor).toBe('s4');
+    expect((await store.listRecent({ workspaceIds: [workspaceId], limit: 0 })).items).toEqual([]);
 
     const unknown = await store.listRecent({ workspaceIds: [workspaceId], before: 'missing' });
     expect(unknown.items).toEqual([]);
@@ -551,6 +555,34 @@ describe('FileSessionIndex (read model)', () => {
     expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(2);
   });
 
+  it('projects large histories in bounded write batches without dropping the tail', async () => {
+    class RecordingQueryStore extends MiniDbQueryStore {
+      readonly batchSizes: number[] = [];
+      override async batch(ops: readonly WriteOp[]): Promise<void> {
+        this.batchSizes.push(ops.length);
+        return super.batch(ops);
+      }
+    }
+    overrideScopedService(
+      LifecycleScope.App,
+      IQueryStore,
+      RecordingQueryStore,
+      ScopeActivation.OnDemand,
+      'storage',
+    );
+    for (let index = 0; index < 4097; index++) {
+      await seedSession(`bulk_${index}`, { createdAt: index, updatedAt: index });
+    }
+    const store = build();
+    expect((await store.prepare()).state).toBe('ready');
+
+    expect((queryStore as RecordingQueryStore).batchSizes.slice(0, 2)).toEqual([4096, 1]);
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(4097);
+    expect((await store.listRecent({ workspaceIds: [workspaceId], limit: 1 })).items[0]?.id).toBe(
+      'bulk_4096',
+    );
+  });
+
   it('prepare skips stray files and state-less directories instead of failing the projection', async () => {
     await seedSession('active', { title: 'hello', createdAt: 1, updatedAt: 2 });
     await fsp.writeFile(join(sessionsDir, 'workspace.json'), '{}');
@@ -768,6 +800,26 @@ describe('FileSessionIndex (read model)', () => {
     await mirror.drain();
     const settled = await store.listRecent({ workspaceIds: [workspaceId] });
     expect(settled.items.map((s) => s.id)).toEqual(['a']);
+  });
+
+  it('remove updates session counters in the same batch as the row deletion', async () => {
+    await seedSession('a', { createdAt: 1, updatedAt: 2 });
+    await seedSession('b', { createdAt: 2, updatedAt: 3 });
+    await seedSession('archived', { createdAt: 3, updatedAt: 4, archived: true });
+    const store = build();
+    await store.prepare();
+
+    await store.remove('a');
+
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+    expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(2);
+    expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id)).toEqual([
+      'b',
+    ]);
+
+    await store.remove('archived');
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+    expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(1);
   });
 
   it('remove waits out an in-flight mirror flush before deleting from the store', async () => {

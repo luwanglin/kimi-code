@@ -34,7 +34,6 @@ import {
 const WRITE_CHUNK = 4096;
 const SCAN_CONCURRENCY = 16;
 const STAT_CONCURRENCY = 64;
-const SHARED_SCAN_REUSE_MS = 30_000;
 
 export interface SessionIndexProjectorDeps {
   readonly storage: IFileSystemStorageService;
@@ -64,7 +63,6 @@ export interface AuthoritativeScan {
 
 interface ScanSlot {
   readonly promise: Promise<AuthoritativeScan>;
-  readonly reusableUntil: number;
   settled: boolean;
 }
 
@@ -72,14 +70,6 @@ export class SessionIndexProjector {
   private scanSlot: ScanSlot | undefined;
 
   constructor(private readonly deps: SessionIndexProjectorDeps) {}
-
-  sharedScan(): Promise<AuthoritativeScan> {
-    const slot = this.scanSlot;
-    if (slot !== undefined && (!slot.settled || Date.now() < slot.reusableUntil)) {
-      return slot.promise;
-    }
-    return this.startScan();
-  }
 
   sharedScanForRead(): Promise<AuthoritativeScan> {
     const slot = this.scanSlot;
@@ -90,7 +80,6 @@ export class SessionIndexProjector {
   private startScan(): Promise<AuthoritativeScan> {
     const slot: ScanSlot = {
       promise: this.scanAuthoritative(),
-      reusableUntil: Date.now() + SHARED_SCAN_REUSE_MS,
       settled: false,
     };
     const markSettled = (): void => {
@@ -102,18 +91,10 @@ export class SessionIndexProjector {
   }
 
   async project(generation: number): Promise<ProjectionResult> {
-    const scan = this.sharedScan();
-    try {
-      return await this.doProject(generation, scan);
-    } finally {
-      if (this.scanSlot?.promise === scan) this.scanSlot = undefined;
-    }
+    return this.doProject(generation);
   }
 
-  private async doProject(
-    generation: number,
-    scan: Promise<AuthoritativeScan>,
-  ): Promise<ProjectionResult> {
+  private async doProject(generation: number): Promise<ProjectionResult> {
     const { queryStore, log } = this.deps;
     const epoch = queryStore.storeEpoch();
     const collection = sessionCollection(generation);
@@ -126,15 +107,21 @@ export class SessionIndexProjector {
       field: `custom.${PARENT_SESSION_ID_KEY}`,
     });
 
-    const { summaries, counts, sourceSessionCount, workspaceSignals } = await scan;
-    await this.batchChunks(
-      summaries.map((summary) => ({
-        kind: 'put' as const,
-        collection,
-        key: summary.id,
-        value: withRecencyField(generation, summary),
-        columns: { [recencyColumn(generation)]: summary.updatedAt },
-      })),
+    let projected = 0;
+    const { counts, sourceSessionCount, workspaceSignals } = await this.scanAuthoritative(
+      async (summaries) => {
+        projected += summaries.length;
+        for (let start = 0; start < summaries.length; start += WRITE_CHUNK) {
+          const ops = summaries.slice(start, start + WRITE_CHUNK).map((summary) => ({
+            kind: 'put' as const,
+            collection,
+            key: summary.id,
+            value: withRecencyField(generation, summary),
+            columns: { [recencyColumn(generation)]: summary.updatedAt },
+          }));
+          await queryStore.batch(ops);
+        }
+      },
     );
     await this.writeCounters(counters, counts);
     await queryStore.setCheckpoint(
@@ -149,7 +136,7 @@ export class SessionIndexProjector {
     );
     log.info('session index generation published', {
       generation,
-      sessions: summaries.length,
+      sessions: projected,
     });
 
     if (generation > 1) {
@@ -165,7 +152,7 @@ export class SessionIndexProjector {
           });
         });
     }
-    return { generation, sessions: summaries.length };
+    return { generation, sessions: projected };
   }
 
   async reconcile(generation: number): Promise<ReconcileResult> {
@@ -293,7 +280,9 @@ export class SessionIndexProjector {
     return result;
   }
 
-  private async scanAuthoritative(): Promise<AuthoritativeScan> {
+  private async scanAuthoritative(
+    onBatch?: (summaries: SessionSummary[]) => Promise<void>,
+  ): Promise<AuthoritativeScan> {
     const { storage, docs, sessionsScope } = this.deps;
     const cache = await readSessionScanCache(storage, sessionsScope);
     const nextCache = new Map<string, SessionScanCacheEntry>();
@@ -338,8 +327,9 @@ export class SessionIndexProjector {
         });
         return summary;
       });
+      if (onBatch !== undefined) await onBatch(found);
+      else summaries.push(...found);
       for (const summary of found) {
-        summaries.push(summary);
         if (summary.archived) entry.archived += 1;
         else entry.active += 1;
       }
