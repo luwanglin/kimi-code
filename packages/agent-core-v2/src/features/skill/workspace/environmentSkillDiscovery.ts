@@ -9,7 +9,7 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { isHostFsNotDirectory, isHostFsNotFound } from '#/os/interface/hostFsErrors';
 
 const MAX_SKILL_SCAN_DEPTH = 8;
-const SKILL_SCAN_CONCURRENCY = 8;
+const SKILL_SCAN_CONCURRENCY = 16;
 
 interface SkillFileInput {
   readonly skillMdPath: string;

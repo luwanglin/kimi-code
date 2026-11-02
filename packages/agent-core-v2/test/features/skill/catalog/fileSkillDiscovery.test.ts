@@ -96,7 +96,7 @@ describe.each(['local', 'environment'] as const)('%s skill discovery', (backend)
   });
 
   it.skipIf(backend === 'local')('bounds parallel skill reads and keeps precedence when later files finish first', async () => {
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 16; i++) {
       await writeSkill(`skills/skill-${i}/SKILL.md`, `name: shared\ndescription: from skill-${i}`);
     }
     const fs = new HostFileSystem();
@@ -122,10 +122,10 @@ describe.each(['local', 'environment'] as const)('%s skill discovery', (backend)
     const discovery = new EnvironmentSkillDiscovery(stubLog(), fs);
     const loading = discovery.discover([skillRoot('skills')]);
     try {
-      await vi.waitFor(() => { expect(metadataInFlight).toBe(8); });
+      await vi.waitFor(() => { expect(metadataInFlight).toBe(16); });
       releaseMetadata();
-      await vi.waitFor(() => { expect(reads).toHaveLength(8); });
-      expect(metadataPeak).toBe(8);
+      await vi.waitFor(() => { expect(reads).toHaveLength(16); });
+      expect(metadataPeak).toBe(16);
       readsReleased = true;
       for (const { release } of reads.toSorted((a, b) => b.path.localeCompare(a.path))) release();
       const result = await loading;
