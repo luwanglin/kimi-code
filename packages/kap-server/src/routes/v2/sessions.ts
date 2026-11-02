@@ -480,6 +480,7 @@ async function listDefaultFlatPage(
     const page = await index.listRecent({
       workspaceIds,
       includeArchived: query.archived !== 'false',
+      archivedOnly: query.archived === 'true' ? true : undefined,
       before,
       limit: batchSize,
     });

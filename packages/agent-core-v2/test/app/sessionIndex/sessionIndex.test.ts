@@ -142,6 +142,26 @@ describe('FileSessionIndex (legacy)', () => {
     expect(page.items.map((s) => s.id).toSorted()).toEqual(['active', 'archived']);
   });
 
+  it('listRecent filters archivedOnly across legacy and limited reads', async () => {
+    await seedSession('active', { createdAt: 1, updatedAt: 1 });
+    await seedSession('archived', { createdAt: 2, updatedAt: 2, archived: true });
+    const store = build();
+
+    const unbounded = await store.listRecent({
+      workspaceIds: [workspaceId],
+      includeArchived: true,
+      archivedOnly: true,
+    });
+    expect(unbounded.items.map((s) => s.id)).toEqual(['archived']);
+    const limited = await store.listRecent({
+      workspaceIds: [workspaceId],
+      includeArchived: true,
+      archivedOnly: true,
+      limit: 1,
+    });
+    expect(limited.items.map((s) => s.id)).toEqual(['archived']);
+  });
+
   it('get fetches a session by id across workspaces', async () => {
     await seedSession('active', { title: 'hello' });
 
@@ -581,6 +601,22 @@ describe('FileSessionIndex (read model)', () => {
     expect((await store.listRecent({ workspaceIds: [workspaceId], limit: 1 })).items[0]?.id).toBe(
       'bulk_4096',
     );
+  });
+
+  it('uses the read model archivedOnly filter for direct archived pages', async () => {
+    await seedSession('active', { createdAt: 1, updatedAt: 1 });
+    await seedSession('archived', { createdAt: 2, updatedAt: 2, archived: true });
+    const store = build();
+    await store.prepare();
+
+    const page = await store.listRecent({
+      workspaceIds: [workspaceId],
+      includeArchived: true,
+      archivedOnly: true,
+      limit: 1,
+    });
+    expect(page.items.map((s) => s.id)).toEqual(['archived']);
+    expect(page.nextCursor).toBeUndefined();
   });
 
   it('prepare skips stray files and state-less directories instead of failing the projection', async () => {

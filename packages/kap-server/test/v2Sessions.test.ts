@@ -120,7 +120,9 @@ function stubSessionIndex(
         const ids = new Set(query.workspaceIds);
         items = items.filter((summary) => ids.has(summary.workspaceId));
       }
-      if (query.includeArchived !== true) {
+      if (query.archivedOnly === true) {
+        items = items.filter((summary) => summary.archived);
+      } else if (query.includeArchived !== true) {
         items = items.filter((summary) => !summary.archived);
       }
       items = items.toSorted(
@@ -604,7 +606,8 @@ describe('server /api/v2/sessions', () => {
       expect(archived.items.map((item) => item.id)).toEqual(['bulk_archived']);
       expect(archived.total).toBe(1);
       expect(all.total).toBe(206);
-      expect(calls.listRecent.length).toBeGreaterThanOrEqual(6);
+      expect(calls.listRecent.length).toBeGreaterThanOrEqual(5);
+      expect(calls.listRecent.filter((query) => query.archivedOnly === true)).toHaveLength(1);
       for (const query of calls.listRecent) {
         expect(query.limit).toEqual(expect.any(Number));
         expect(query.limit).toBeLessThanOrEqual(101);
