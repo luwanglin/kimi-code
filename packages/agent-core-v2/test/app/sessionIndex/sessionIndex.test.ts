@@ -619,6 +619,21 @@ describe('FileSessionIndex (read model)', () => {
     expect(page.nextCursor).toBeUndefined();
   });
 
+  it('uses the read model hasPrompt filter for non-empty session pages', async () => {
+    await seedSession('empty', { createdAt: 1, updatedAt: 1 });
+    await seedSession('prompted', { createdAt: 2, updatedAt: 2, lastPrompt: 'hello' });
+    const store = build();
+    await store.prepare();
+
+    const page = await store.listRecent({
+      workspaceIds: [workspaceId],
+      hasPrompt: true,
+      limit: 1,
+    });
+    expect(page.items.map((s) => s.id)).toEqual(['prompted']);
+    expect(page.nextCursor).toBeUndefined();
+  });
+
   it('prepare skips stray files and state-less directories instead of failing the projection', async () => {
     await seedSession('active', { title: 'hello', createdAt: 1, updatedAt: 2 });
     await fsp.writeFile(join(sessionsDir, 'workspace.json'), '{}');

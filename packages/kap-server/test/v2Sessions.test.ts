@@ -125,6 +125,11 @@ function stubSessionIndex(
       } else if (query.includeArchived !== true) {
         items = items.filter((summary) => !summary.archived);
       }
+      if (query.hasPrompt !== undefined) {
+        items = items.filter(
+          (summary) => ((summary.lastPrompt ?? '').length > 0) === query.hasPrompt,
+        );
+      }
       items = items.toSorted(
         (a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
       );

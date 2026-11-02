@@ -72,6 +72,10 @@ function matchesArchived(query: SessionListQuery, summary: SessionSummary): bool
     : query.includeArchived === true || !summary.archived;
 }
 
+function matchesPrompt(query: SessionListQuery, summary: SessionSummary): boolean {
+  return query.hasPrompt === undefined || ((summary.lastPrompt ?? '').length > 0) === query.hasPrompt;
+}
+
 function isSessionSummaryShape(value: unknown): value is SessionSummary {
   if (value === null || typeof value !== 'object') return false;
   const summary = value as Record<string, unknown>;
@@ -458,7 +462,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     if (query.sessionId !== undefined) {
       const summary = await this.getFromReadModel(generation, query.sessionId);
       const items =
-        summary !== undefined && matchesArchived(query, summary)
+        summary !== undefined && matchesArchived(query, summary) && matchesPrompt(query, summary)
           ? [summary]
           : [];
       return { items: query.limit !== undefined ? items.slice(0, query.limit) : items };
@@ -580,7 +584,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const pending = queued.filter(
       (summary) =>
         (query.workspaceIds === undefined || query.workspaceIds.includes(summary.workspaceId)) &&
-        matchesArchived(query, summary) &&
+        matchesArchived(query, summary) && matchesPrompt(query, summary) &&
         summaryMatchesChildOf(summary, query.childOf) &&
         (position === undefined ||
           (position.before
@@ -654,6 +658,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
     if (query.archivedOnly === true) filter['archived'] = true;
     else if (query.includeArchived !== true) filter['archived'] = { $ne: true };
+    if (query.hasPrompt === true) filter['lastPrompt'] = { $gt: '' };
     return filter;
   }
 
@@ -665,7 +670,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     if (query.sessionId !== undefined) {
       const summary = await this.getLegacy(query.sessionId);
       const items =
-        summary !== undefined && matchesArchived(query, summary)
+        summary !== undefined && matchesArchived(query, summary) && matchesPrompt(query, summary)
           ? [summary]
           : [];
       return { items: query.limit !== undefined ? items.slice(0, query.limit) : items };
@@ -674,7 +679,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
     const collected = (await this.collectAuthoritative(query.workspaceIds)).filter(
       (summary) =>
-        matchesArchived(query, summary) &&
+        matchesArchived(query, summary) && matchesPrompt(query, summary) &&
         summaryMatchesChildOf(summary, query.childOf),
     );
     const items = collected.toSorted(canonicalOrder);
@@ -699,7 +704,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const cursorId = query.before ?? query.after;
     const matches = (summary: SessionSummary): boolean =>
       (query.workspaceIds === undefined || query.workspaceIds.includes(summary.workspaceId)) &&
-      matchesArchived(query, summary) &&
+      matchesArchived(query, summary) && matchesPrompt(query, summary) &&
       summaryMatchesChildOf(summary, query.childOf);
     const cursor =
       cursorId === undefined

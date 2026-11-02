@@ -343,6 +343,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
           const page = await index.listRecent({
             workspaceIds,
             includeArchived,
+            hasPrompt: raw.exclude_empty === true ? true : undefined,
             limit: wanted - collected.length,
             before,
             after: before === undefined ? after : undefined,

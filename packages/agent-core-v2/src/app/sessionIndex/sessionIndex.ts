@@ -26,6 +26,7 @@ export interface SessionListQuery {
   readonly sessionId?: string;
   readonly includeArchived?: boolean;
   readonly archivedOnly?: boolean;
+  readonly hasPrompt?: boolean;
   readonly limit?: number;
   readonly childOf?: string;
   readonly before?: string;

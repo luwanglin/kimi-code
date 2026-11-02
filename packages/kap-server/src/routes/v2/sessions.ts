@@ -573,6 +573,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
         : await index.listRecent({
             workspaceIds,
             includeArchived: query.archived !== 'false',
+            hasPrompt: query.hasPrompt,
           });
 
       const factsById = new Map<string, SessionFacts>();
